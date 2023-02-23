@@ -1,0 +1,8 @@
+{
+  "name": "VisitorProfit",
+  "creator": "Chaos_Filler",
+  "requires": ["axios", "Lore"],
+  "description": "Calculates profits of Garden visitors through Copper and Farming XP. Assumes 60 Wisdom and 1 coin per XP. Also assumes you're sell offering Sunder V and insta-buying materials.",
+  "version": "1.0.2",
+  "entry": "index.js"
+}
