@@ -7,127 +7,213 @@ const TEN_MINUTES = ONE_MINUTES * 10
 const FARMING_WISDOM = 60
 const COIN_PER_XP = 1
 
+const desiredItemDictionary = JSON.parse(FileLib.read("VisitorProfit", "potentialItems.json"))
+
+// Gets initial bazaar prices for all desired items
+getBazaarPrice()
+
+// Updates tooltip on hover if correct menu item
+register("ItemTooltip", renderCopperProfits)
+
+// Continually updates bazaar prices for desired items every ten minutes
+register("step", getBazaarPrice).setDelay(TEN_MINUTES)
+
+// Prevents spam-reading of item lore while hovering
+let lastSentLoreLine = ""
+register("guiClosed", () => {
+    lastSentLoreLine = ""
+})
+
+// Checks if queue is full from tab every minute, notifies in chat if it is
+register("step", () => {
+    let queueTabLine = TabList.getNames().find((entry) => (entry.includes("Queue Full!")))
+    if (queueTabLine) {
+        queueNotificationSound.play()
+        ChatLib.chat("§c§lQueue Full!")
+    }
+}).setDelay(ONE_MINUTES)
+
+// Tells price of copper via command
+register("command", () => {
+    ChatLib.chat(`§2[VisitorProfit] §c1 Copper§7 is currently worth §6${desiredItemDictionary["Copper"][1]} coins§7.`)
+    ChatLib.chat(`§2[VisitorProfit] §7Note: Price is calculated off Sunder V sell offers.`)
+}).setName("cfratio")
+
+/**
+ * Gathers information about each desired item
+ *
+ * @param string - The line of lore that has the desired item
+ * @returns {{quantity: string, name: string, colorCode: string}} - Information about the desired item
+ */
 function desireInformation(string) {
-    string = string.replace(",", "")
-    const regex = /x[0-9]+/
-    let found = ""
-    if (string.match(regex) == undefined) {
-        found = ["x1"]
-        string = string + " §8x1"
-    } else {
-        found = string.match(regex)
-    }
-    const quantity = found[0].slice(1)
-    const itemNameWithColor = string.slice(5, -3 + -1 * found[0].length)
-    const itemName = itemNameWithColor.slice(2)
-    const colorCode = itemNameWithColor.slice(0, 2)
+    const qtyRegex = /x[0-9]+/
 
-    const itemInformation = {
-        "colorCode": colorCode,
-        "name": itemName,
-        "quantity": quantity
+    const desiredItem = {
+        "colorCode": "§4",
+        "name": "Invalid item",
+        "quantity": "1"
     }
 
-    return itemInformation
+    // Gets rid of the comma when there's more than 1k items needed
+    string = string.replace(",", "");
+
+    const foundQty = string.match(qtyRegex)
+
+    // Gets only the name and color of the item
+    const itemNameWithColor = string.slice(string.indexOf(" ") + 1, string.lastIndexOf(" "))
+
+    desiredItem.quantity = foundQty[0].slice(1)
+    desiredItem.name = itemNameWithColor.slice(2)
+    desiredItem.colorCode = itemNameWithColor.slice(0, 2)
+
+    return desiredItem;
 }
 
+/**
+ * Rounds to a chosen decimal place instead of to a whole number
+ *
+ * @param number - Number to round
+ * @param digits - How many decimal places to round to
+ * @returns {number} - The rounded number
+ */
 function betterRound(number, digits) {
-    let decimalPlaces = 10 ** digits
+    const decimalPlaces = 10 ** digits
     return Math.round(number * decimalPlaces) / decimalPlaces
 }
 
+/**
+ * Formats a number to a price using format characters (k, m, B)
+ *
+ * @param num - The number to format
+ * @param digits - Number of decimal places
+ * @returns {string} - The formatted number
+ */
 function formatNumberAsPrice(num, digits) {
-    const lookup = [
-      { value: 1, symbol: "" },
-      { value: 1e3, symbol: "k" },
-      { value: 1e6, symbol: "m" },
-      { value: 1e9, symbol: "B" }
+    const formatChars = [
+        { value: 1, symbol: "" },
+        { value: 1e3, symbol: "k" },
+        { value: 1e6, symbol: "m" },
+        { value: 1e9, symbol: "B" }
     ]
-    const rx = /\.0+$|(\.[0-9]*[1-9])0+$/
-    var item = lookup.slice().reverse().find(function(item) {
-      return num >= item.value
+
+    // Matches the decimal and everything after it
+    const decimalRegex = /\.0+$|(\.[0-9]*[1-9])0+$/
+
+    // Determines the format character to use for the number
+    const item = formatChars.slice().reverse().find((item) => {
+        return num >= item.value
     })
-    return item ? (num / item.value).toFixed(digits).replace(rx, "$1") + item.symbol : "0"
+
+    // Returns the newly formatted number string
+    return item
+        ? (num / item.value).toFixed(digits).replace(decimalRegex, "$1") + item.symbol
+        : "0"
 }
 
+/**
+ * Converts a formatted string (k, m) to a number
+ *
+ * @param str - The string to convert
+ * @returns {number} - The converted number
+ */
 function convertFormattedStringToInt(str) {
-    // Remove any commas in the string and convert to lowercase
-    str = str.replace(/,/g, '').toLowerCase();
-  
-    // Check if the string ends with 'k' or 'm'
-    if (str.endsWith('k')) {
-      // Remove the 'k' and multiply the number by 1000
-      return parseInt(str.slice(0, -1)) * 1000;
-    } else if (str.endsWith('m')) {
-      // Remove the 'm' and multiply the number by 1000000
-      return parseInt(str.slice(0, -1)) * 1000000;
-    } else {
-      // If the string doesn't end with 'k' or 'm', parse the integer directly
-      return parseInt(str);
-    }
-  }
+    str = str.replaceAll(",", "").toLowerCase();
 
-let desiredItemDictionary = JSON.parse(FileLib.read("VisitorProfit", "potentialItems.json"))
+    if (str.endsWith('k'))
+        return parseInt(str.slice(0, -1)) * 1000;
+    else if (str.endsWith('m'))
+        return parseInt(str.slice(0, -1)) * 1000000;
+    else
+        return parseInt(str);
+}
 
+/**
+ * Updates the JSON file with updated bazaar information
+ */
 function getBazaarPrice() {
     const BAZAAR_ENDPOINT = 'https://api.hypixel.net/skyblock/bazaar'
+
     axios.get(BAZAAR_ENDPOINT).then((response) => {
         const productsObject = response.data.products
         const itemNamesInDictionary = Object.keys(desiredItemDictionary)
-        itemNamesInDictionary.forEach((key) => {
-            let itemDataInDictionary = desiredItemDictionary[key]
-            let itemID = itemDataInDictionary[0]
-            let itemPrice = (productsObject[itemID] == undefined) ? undefined : productsObject[itemID].buy_summary[0].pricePerUnit
-            desiredItemDictionary[key][1] = (itemPrice == undefined) ? -1 : itemPrice
+
+        itemNamesInDictionary.forEach((item) => {
+            // console.log("woof")
+            let itemInfo = desiredItemDictionary[item]
+            let itemID = itemInfo[0]
+            let itemPrice = productsObject[itemID]?.buy_summary[0].pricePerUnit
+            // let productID = productsObject[itemID]?.product_id
+            itemInfo[1] = !itemPrice ? -1 : itemPrice
         })
+
+        // Calculate copper revenue using Sunder books
         desiredItemDictionary["Copper"][1] = betterRound(desiredItemDictionary["Sunder 5"][1] / 16 / 10, 1)
+
+        // Calculates farming revenue if you get a coin per XP (scaling with wisdom)
         desiredItemDictionary["Farming XP"][1] = COIN_PER_XP * (1 + FARMING_WISDOM / 100)
+
+        console.log(">> Updated Bazaar Prices. <<")
+
         FileLib.write("VisitorProfit", "potentialItems.json", JSON.stringify(desiredItemDictionary))
     })
 }
 
-// TooltipRendrer
-register("ItemTooltip", renderCopperProfits)
-
-getBazaarPrice()
-register("step", getBazaarPrice).setDelay(TEN_MINUTES)
-
+/**
+ * Gets the amount of rewards for a specific reward type
+ *
+ * @param rewardsArray - The rewards to search in
+ * @param type - The type of reward to search for
+ * @returns {number} - The amount of the reward
+ */
 function parseRewardInt(rewardsArray, type) {
-    let loreLine = rewardsArray.find((lore) => ( lore.includes(type) ))
-    let rewardStr = (loreLine) ? rewardStr = loreLine.slice(10) : `0 ${type}`
-    let rewardInt = convertFormattedStringToInt(rewardStr.slice(0, -1 * (type.length + 1)))
+    // Reward lore that matches the type
+    const rewardLore = rewardsArray.find((lore) => { return lore.includes(type) } )
 
-    return rewardInt
+    // Gets the amount rewarded and the type that's rewarded
+    const rewardStr = rewardLore ? rewardLore.slice(rewardLore.indexOf("+") + 3) : `0 ${type}`
+
+    // Gets the integer value of amount rewarded
+    return convertFormattedStringToInt(rewardStr.slice(0, rewardStr.indexOf(" ")))
 }
 
+/**
+ * Finds the desires and rewards a visitor is offering
+ *
+ * @param lore - The offer's lore
+ * @returns {{desires: *[], rewards: *[]}} - An object storing arrays of desires and rewards
+ */
 function findNPCDesireAndReward(lore) {
-    let npcDesireAndReward = {
-        "desire": [],
-        "award": []
+    const npcDesireAndReward = {
+        "desires": [],
+        "rewards": []
     }
 
-    let endOfRequestLineNumber = 4
+    let endDesiresLineNumber = 4
+    const rewardsArray = []
 
-    // finds the item names
-    for (i = 2; i < lore.length; i++) {
-        if (lore[i].slice(4).trim() == "") { break }
+    // Gathers offer item names
+    for (let i=2; i<lore.length; i++) {
+        if (lore[i].slice(4).trim() === "") break
+
         let desiredItem = desireInformation(lore[i])
-        npcDesireAndReward.desire.push(desiredItem)
-        endOfRequestLineNumber++
+
+        npcDesireAndReward.desires.push(desiredItem)
+        endDesiresLineNumber++
     }
 
-    let rewardsArray = []
-    for (i = endOfRequestLineNumber; i < lore.length; i++) {
-        if (lore[i].slice(4).trim() == "") { break }
+    // Gathers rewards
+    for (let i=endDesiresLineNumber; i<lore.length; i++) {
+        if (lore[i].slice(4).trim() === "") break
+
         rewardsArray.push(lore[i])
     }
 
-    npcDesireAndReward.award.push({
+    npcDesireAndReward.rewards.push({
         "name": "Copper",
         "quantity": parseRewardInt(rewardsArray, "Copper"),
         "colorCode": "§c"
     })
-    npcDesireAndReward.award.push({
+    npcDesireAndReward.rewards.push({
         "name": "Farming XP",
         "quantity": parseRewardInt(rewardsArray, "§7Farming XP"),
         "colorCode": "§3"
@@ -136,72 +222,67 @@ function findNPCDesireAndReward(lore) {
     return npcDesireAndReward
 }
 
+/**
+ * Creates the lore to add on to the original lore
+ *
+ * @param desireArray - All desires of the offer
+ * @param rewardArray - All rewards of the offer
+ * @returns {string[]} - The new lines of lore
+ */
 function constructLoreAppend(desireArray, rewardArray) {
-    let loreArray = []
-    let netProfit = 0
-    let spaces = " ".repeat(44)
-    let divider = `§8§m${spaces}`
+    const loreArray = []
+    const divider = `§8§m${" ".repeat(44)}`
+    let profit = 0
 
     loreArray.push(divider)
-    desireArray.forEach((itemInfo) => {
-        let cost = desiredItemDictionary[itemInfo.name][1] * itemInfo.quantity
-        netProfit -= cost
-        loreArray.push(` ${itemInfo.colorCode}${itemInfo.name}§7: §c-${formatNumberAsPrice(cost, 2)}`)
+
+    // Adds desires and their costs to the lore
+    desireArray.forEach((desire) => {
+        let cost = desiredItemDictionary[desire.name][1] * desire.quantity
+        profit -= cost
+        loreArray.push(` ${desire.colorCode}${desire.name}§7: §c-${formatNumberAsPrice(cost, 2)}`)
     })
+
     loreArray.push(divider)
+
+    // Adds rewards and their revenue to the lore
     rewardArray.forEach((reward) => {
-        let profit = desiredItemDictionary[reward.name][1] * reward.quantity
-        netProfit += profit
-        loreArray.push(` ${reward.colorCode}${reward.name}§7: §a+${formatNumberAsPrice(profit, 2)}`)
+        let revenue = desiredItemDictionary[reward.name][1] * reward.quantity
+        profit += revenue
+        loreArray.push(` ${reward.colorCode}${reward.name}§7: §a+${formatNumberAsPrice(revenue, 2)}`)
     })
+
     loreArray.push(divider)
 
-    let netProfitColorCode = (netProfit > 0) ? "§a+" : "§c-"
-    netProfit = (netProfit > 0) ? netProfit : -1 * netProfit
-    loreArray.push(` §6Profit: ${netProfitColorCode}${formatNumberAsPrice(netProfit, 2)}`)
+    const profitColorCode = (profit > 0) ? "§a+" : "§c-"
+    profit = (profit > 0) ? profit : -1 * profit
+    loreArray.push(` §6Profit: ${profitColorCode}${formatNumberAsPrice(profit, 2)}`)
     loreArray.push(divider)
 
     return loreArray
 }
 
-function renderCopperProfits(lore, item, event) {
-    if (lore[0] == undefined) { return }
-    if (!lore[0].includes("Accept Offer")) { return }
-    if (lore.indexOf(`§5§o§8§m${" ".repeat(44)}`) != -1) { return }
+/**
+ * Renders profit, revenue, and cost information on the original lore
+ *
+ * @param lore - The original lore
+ * @param item - The item to attach the new lore to
+ */
+function renderCopperProfits(lore, item) {
+    // Returns if not hovering over offer
+    if (!lore[0].includes("Accept Offer")) return
 
-    let npcDesireAndReward = findNPCDesireAndReward(lore)
+    // Returns if already rendering lore
+    if (lastSentLoreLine === lore[2]) return
+    lastSentLoreLine = lore[2]
 
-    let desireArray = npcDesireAndReward.desire
-    let rewardArray = npcDesireAndReward.award
-    let loreArray = constructLoreAppend(desireArray, rewardArray)
-    
-    loreArray.forEach((loreLine) => {
-        Lore.append(item, loreLine)
+    const npcDesireAndReward = findNPCDesireAndReward(lore)
+
+    const desireArray = npcDesireAndReward.desires
+    const rewardArray = npcDesireAndReward.rewards
+    const loreArray = constructLoreAppend(desireArray, rewardArray)
+
+    loreArray.forEach((line) => {
+        Lore.append(item, line)
     })
 }
-
-
-
-register("command", () => {
-    ChatLib.chat(`§2[VisitorProfit] §c1 Copper§7 is currently worth §6${desiredItemDictionary["Copper"][1]} coins§7.`)
-    ChatLib.chat(`§2[VisitorProfit] §7Note: Price is calculated off Sunder V sell offers.`)
-}).setName("vpratio")
-
-let queueNotificationEnable = true
-register("command", () => {
-    if (queueNotificationEnable) {
-        ChatLib.chat(`§2[VisitorProfit] §7Queue notifications are now §cOFF§7.`)
-        queueNotificationEnable = false
-    } else {
-        ChatLib.chat(`§2[VisitorProfit] §7Queue notifications are now §aON§7.`)
-        queueNotificationEnable = true  
-    }
-}).setName("vpqueuesound")
-
-register("step", () => {
-    let queueTabLine = TabList.getNames().find((entry) => (entry.includes("Queue Full!")))
-    if (queueTabLine != undefined && queueNotificationEnable) { 
-        queueNotificationSound.play()
-        ChatLib.chat("§c§lQueue Full!")
-    }
-}).setDelay(ONE_MINUTES)
